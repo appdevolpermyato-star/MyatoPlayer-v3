@@ -1,0 +1,88 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant Execute Permission to Gradle
+        run: chmod +x gradlew
+
+      - name: Decode Debug Keystore
+        run: |
+          if [ -n "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ secrets.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+            echo "Debug keystore decoded from secret."
+          elif [ -n "${{ vars.DEBUG_KEYSTORE_BASE64 }}" ]; then
+            echo "${{ vars.DEBUG_KEYSTORE_BASE64 }}" | base64 -d > debug.keystore
+            echo "Debug keystore decoded from variable."
+          elif [ -f debug.keystore.base64 ]; then
+            cat debug.keystore.base64 | base64 -d > debug.keystore
+            echo "Debug keystore decoded from repository file."
+          else
+            echo "Warning: No debug keystore source found. Generating a new one for debug builds."
+            keytool -genkey -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Prepare APKs for Artifacts
+        if: always()
+        run: |
+          mkdir -p outputs
+          # Find and copy all generated APKs
+          find app/build/outputs/apk -name "*.apk" -exec cp {} outputs/ \;
+          # Rename for clarity if they exist
+          [ -f outputs/app-debug.apk ] && mv outputs/app-debug.apk outputs/MyatoPlayer-debug.apk || true
+          [ -f outputs/app-release.apk ] && mv outputs/app-release.apk outputs/MyatoPlayer-release.apk || true
+
+      - name: Upload APK Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyatoPlayer-APKs
+          path: outputs/*.apk
+          retention-days: 7
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            outputs/MyatoPlayer-release.apk
+            outputs/MyatoPlayer-debug.apk
+          name: MyatoPlayer ${{ github.ref_name }}
+          body: |
+            Nova versão oficial do MyatoPlayer disponível!
+            
+            **Instalação:**
+            Baixe o arquivo `MyatoPlayer-release.apk` abaixo e instale no seu Android.
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
